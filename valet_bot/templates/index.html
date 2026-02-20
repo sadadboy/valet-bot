@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Valet 예약 대시보드</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Valet 예약 대시보드</h1>
+    <section class="panel">
+      <h2>현재 상태</h2>
+      <p>활성화: <strong>{{ "ON" if config.general.enabled else "OFF" }}</strong></p>
+      <p>실행중: <strong>{{ "YES" if runtime_state.running else "NO" }}</strong></p>
+      <p>마지막 시도: <strong>{{ runtime_state.last_attempt_at or "-" }}</strong></p>
+      <p>성공 대상일: <strong>{{ runtime_state.last_success_target or "-" }}</strong></p>
+      <form method="post" action="/run-now">
+        <button type="submit">지금 1회 시도</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>설정</h2>
+      <form method="post" action="/config" class="grid">
+        <label>성명<input name="name" value="{{ config.booking.name }}" required /></label>
+        <label>휴대전화<input name="phone" value="{{ config.booking.phone }}" required /></label>
+        <label>차량번호<input name="car_number" value="{{ config.booking.car_number }}" required /></label>
+        <label>차량모델<input name="car_model" value="{{ config.booking.car_model }}" required /></label>
+
+        <label>출발 날짜<input type="date" name="target_departure_date" value="{{ config.schedule.target_departure_date }}" required /></label>
+        <label>출발 시간
+          <select name="departure_time">
+            {% for h in range(24) %}
+              {% for m in [0, 30] %}
+                {% set t = "%02d:%02d" % (h, m) %}
+                <option value="{{ t }}" {% if t == config.schedule.departure_time %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            {% endfor %}
+          </select>
+        </label>
+        <label>도착 날짜<input type="date" name="target_arrival_date" value="{{ config.schedule.target_arrival_date }}" required /></label>
+        <label>도착 시간
+          <select name="arrival_time">
+            {% for h in range(24) %}
+              {% for m in [0, 30] %}
+                {% set t = "%02d:%02d" % (h, m) %}
+                <option value="{{ t }}" {% if t == config.schedule.arrival_time %}selected{% endif %}>{{ t }}</option>
+              {% endfor %}
+            {% endfor %}
+          </select>
+        </label>
+
+        <label>예약 시작 시각<input type="time" name="check_start_time" value="{{ config.schedule.check_start_time }}" required /></label>
+        <label>종료 시각<input type="time" name="stop_time" value="{{ config.schedule.stop_time }}" required /></label>
+        <label>시도 간격(초)<input type="number" min="5" name="interval_seconds" value="{{ config.schedule.interval_seconds }}" required /></label>
+
+        <label>서비스 유형
+          <select name="service_type">
+            <option value="일반" {% if config.booking.service_type == "일반" %}selected{% endif %}>일반</option>
+            <option value="프리미엄" {% if config.booking.service_type == "프리미엄" %}selected{% endif %}>프리미엄</option>
+          </select>
+        </label>
+        <label>차량 브랜드
+          <select name="brand">
+            {% for b in ["현대","기아","쉐보레","르노삼성","쌍용","제네시스","벤츠","BMW","아우디","폭스바겐","도요타","렉서스","혼다","미니","포드","푸조","볼보","포르쉐","캐딜락","지프","링컨","기타"] %}
+              <option value="{{ b }}" {% if config.booking.brand == b %}selected{% endif %}>{{ b }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>색상
+          <select name="color">
+            {% for c in ["검정","흰색","은색","회색","갈색","녹색","빨강","파랑","노랑","보라","자주","기타"] %}
+              <option value="{{ c }}" {% if config.booking.color == c %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>할인 유형
+          <select name="discount_type">
+            <option value="일반" {% if config.booking.discount_type == "일반" %}selected{% endif %}>일반</option>
+          </select>
+        </label>
+        <label>항공편
+          <select name="airline">
+            {% for a in ["대한항공","진에어","에어서울","에어부산","기타"] %}
+              <option value="{{ a }}" {% if config.booking.airline == a %}selected{% endif %}>{{ a }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Discord Webhook<input name="discord_webhook_url" value="{{ config.notify.discord_webhook_url }}" /></label>
+
+        <label>활성화
+          <select name="enabled">
+            <option value="true" {% if config.general.enabled %}selected{% endif %}>ON</option>
+            <option value="false" {% if not config.general.enabled %}selected{% endif %}>OFF</option>
+          </select>
+        </label>
+        <label>헤드리스
+          <select name="headless">
+            <option value="true" {% if config.runtime.headless %}selected{% endif %}>ON</option>
+            <option value="false" {% if not config.runtime.headless %}selected{% endif %}>OFF</option>
+          </select>
+        </label>
+        <label>날짜 스킵 테스트
+          <select name="test_skip_dates">
+            <option value="false" {% if not config.runtime.test_skip_dates %}selected{% endif %}>OFF</option>
+            <option value="true" {% if config.runtime.test_skip_dates %}selected{% endif %}>ON</option>
+          </select>
+        </label>
+
+        <button type="submit" class="save">설정 저장</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>최근 시도</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>시각</th>
+            <th>대상 출발</th>
+            <th>상태</th>
+            <th>메시지</th>
+            <th>스크린샷</th>
+            <th>디버그</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in history %}
+          <tr>
+            <td>{{ row.ts }}</td>
+            <td>{{ row.target_departure_date }} {{ row.departure_time }}</td>
+            <td>{{ row.result.status }}</td>
+            <td>{{ row.result.message }}</td>
+            <td>
+              {% if row.result.screenshot_path %}
+                {% set p = row.result.screenshot_path.split('/')[-1] %}
+                <a href="/shots/{{ p }}" target="_blank">보기</a>
+              {% else %}-{% endif %}
+            </td>
+            <td>
+              {% if row.result.debug_log_path %}
+                {% set d = row.result.debug_log_path.split('/')[-1] %}
+                <a href="/debug/{{ d }}" target="_blank">log</a>
+              {% else %}-{% endif %}
+              {% if row.result.trace_path %}
+                {% set z = row.result.trace_path.split('/')[-1] %}
+                / <a href="/debug/{{ z }}" target="_blank">trace</a>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

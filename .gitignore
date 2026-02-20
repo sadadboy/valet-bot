@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+config.yaml
+data/state.json
+data/history.jsonl
+screenshots/*.png
+data/debug/*.log
+data/debug/*.zip
+.pycache/
