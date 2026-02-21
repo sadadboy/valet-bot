@@ -1,0 +1,15 @@
+services:
+  valet-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: valet-bot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+      - ./data:/app/data
+      - ./screenshots:/app/screenshots
+    environment:
+      - TZ=Asia/Seoul

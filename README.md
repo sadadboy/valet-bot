@@ -21,6 +21,16 @@ python run.py
 cp config.example.yaml config.yaml
 ```
 
+## Docker 실행
+
+```bash
+cp config.example.yaml config.yaml
+docker compose build
+docker compose up -d
+```
+
+접속: `http://<SERVER_IP>:8000`
+
 ## 현재 동작
 
 - 설정파일(`config.yaml`) 기반
