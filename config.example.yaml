@@ -26,6 +26,7 @@ queue:
   enabled: false
   active_index: 0
   profiles: []
+  profile_meta: []
 
 notify:
   discord_webhook_url: "https://discord.com/api/webhooks/REPLACE_ME"

@@ -13,7 +13,7 @@
       <h2>사용 방법</h2>
       <ol class="help-list">
         <li>예약 날짜/시간과 차량정보를 입력하고 <strong>설정 저장</strong>을 누릅니다.</li>
-        <li>자동 실행은 시작시각~종료시각 동안 30초 간격으로 예약을 시도합니다.</li>
+        <li>자동 실행은 시작시각~종료시각 동안 <strong>{{ config.schedule.interval_seconds }}초</strong> 간격으로 예약을 시도합니다.</li>
         <li>바로 테스트하려면 <strong>지금 1회 시도</strong>를 누릅니다.</li>
         <li>여러 사람 예약은 아래 <strong>다중 예약자 큐</strong>에 줄바꿈으로 등록합니다.</li>
       </ol>
@@ -30,6 +30,11 @@
       {% if queue_active_profile %}
       <p>현재 예약자: <strong>{{ queue_active_profile.name }}</strong> / {{ queue_active_profile.car_number }}</p>
       {% endif %}
+      <div class="row-actions">
+        <form method="post" action="/queue/prev"><button type="submit">이전 예약자</button></form>
+        <form method="post" action="/queue/next"><button type="submit">다음 예약자</button></form>
+        <form method="post" action="/queue/reset"><button type="submit">첫 예약자로 초기화</button></form>
+      </div>
       <form method="post" action="/run-now">
         <button type="submit">지금 1회 시도</button>
       </form>
@@ -137,6 +142,36 @@
     </section>
 
     <section class="panel">
+      <h2>예약자 큐 상태</h2>
+      <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>순번</th>
+            <th>이름</th>
+            <th>차량번호</th>
+            <th>상태</th>
+            <th>성공/실패</th>
+            <th>마지막 결과</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in queue_rows %}
+          <tr>
+            <td>{{ row.idx + 1 }}{% if row.idx == queue_active_index %} (현재){% endif %}</td>
+            <td>{{ row.profile.name }}</td>
+            <td>{{ row.profile.car_number }}</td>
+            <td>{{ row.meta.status or "대기" }}</td>
+            <td>{{ row.meta.success_count or 0 }}/{{ row.meta.fail_count or 0 }}</td>
+            <td>{{ row.meta.last_message or "-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+    </section>
+
+    <section class="panel">
       <h2>최근 시도</h2>
       <div class="table-wrap">
       <table>
@@ -146,7 +181,9 @@
             <th>대상 출발</th>
             <th>상태</th>
             <th>메시지</th>
+            <th>예약현황</th>
             <th>스크린샷</th>
+            <th>작업</th>
             <th>디버그</th>
           </tr>
         </thead>
@@ -158,10 +195,40 @@
             <td>{{ row.result.status }}</td>
             <td>{{ row.result.message }}</td>
             <td>
-              {% if row.result.screenshot_path %}
+              {% if row.result.booking_list %}
+                {{ row.result.booking_list.status_text or "-" }} /
+                {% if row.result.booking_list.cancel_available %}취소가능{% else %}취소불가{% endif %}
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>
+              {% if row.result.cancel_result and row.result.cancel_result.screenshot_path %}
+                {% set cp = row.result.cancel_result.screenshot_path.split('/')[-1] %}
+                <a href="/shots/{{ cp }}" target="_blank">취소스샷</a>
+              {% elif row.result.booking_list and row.result.booking_list.screenshot_path %}
+                {% set vp = row.result.booking_list.screenshot_path.split('/')[-1] %}
+                <a href="/shots/{{ vp }}" target="_blank">조회스샷</a>
+              {% elif row.result.screenshot_path %}
                 {% set p = row.result.screenshot_path.split('/')[-1] %}
-                <a href="/shots/{{ p }}" target="_blank">보기</a>
+                <a href="/shots/{{ p }}" target="_blank">예약스샷</a>
               {% else %}-{% endif %}
+            </td>
+            <td>
+              {% if row.result.status in ["success", "success_verified", "success_unverified"] %}
+                <form method="post" action="/history/verify" class="inline">
+                  <input type="hidden" name="ts" value="{{ row.ts }}" />
+                  <button type="submit">예약확인</button>
+                </form>
+                {% if row.result.booking_list and row.result.booking_list.cancel_available %}
+                <form method="post" action="/history/cancel" class="inline" onsubmit="return confirm('정말 예약을 취소하시겠습니까?');">
+                  <input type="hidden" name="ts" value="{{ row.ts }}" />
+                  <button type="submit" class="danger">예약취소</button>
+                </form>
+                {% endif %}
+              {% else %}
+                -
+              {% endif %}
             </td>
             <td>
               {% if row.result.debug_log_path %}

@@ -69,6 +69,32 @@ class StateStore:
                 continue
         return list(reversed(rows))
 
+    def update_history_by_ts(self, ts: str, updater) -> bool:
+        with self.lock:
+            if not self.history_path.exists():
+                return False
+            with self.history_path.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+            changed = False
+            out_lines: list[str] = []
+            for line in lines:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    out_lines.append(line)
+                    continue
+                if not changed and row.get("ts") == ts:
+                    row = updater(row) or row
+                    changed = True
+                out_lines.append(json.dumps(row, ensure_ascii=False) + "\n")
+            if changed:
+                with self.history_path.open("w", encoding="utf-8") as f:
+                    f.writelines(out_lines)
+            return changed
+
     @staticmethod
     def now_iso() -> str:
         return datetime.now().isoformat(timespec="seconds")

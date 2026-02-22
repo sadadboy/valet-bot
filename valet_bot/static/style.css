@@ -46,14 +46,33 @@ button {
 .save { grid-column: 1 / -1; }
 .full { grid-column: 1 / -1; }
 .table-wrap { overflow-x: auto; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+.row-actions form { margin: 0; }
+.inline { display: inline-block; margin-right: 6px; }
+.inline button { height: 30px; padding: 0 10px; font-size: 13px; }
+.danger { background: #d14343; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; }
 a { color: #1d4ed8; text-decoration: none; }
+
+/* Prevent long log message from breaking table layout */
+th:nth-child(4), td:nth-child(4) {
+  max-width: 360px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Keep action/debug cells readable */
+th:nth-child(7), td:nth-child(7),
+th:nth-child(8), td:nth-child(8) {
+  white-space: nowrap;
+}
 
 @media (max-width: 768px) {
   .container { margin: 12px auto; padding: 0 10px; }
   .panel { padding: 12px; border-radius: 8px; }
   .grid { grid-template-columns: 1fr; gap: 8px; }
   input, select, button { height: 42px; font-size: 15px; }
-  table { min-width: 760px; }
+  table { min-width: 980px; }
 }

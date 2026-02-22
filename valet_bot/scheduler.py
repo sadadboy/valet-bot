@@ -5,7 +5,7 @@ import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-from .automation import run_booking_attempt
+from .automation import run_booking_attempt, run_booking_list_check
 from .config import SCREENSHOT_DIR, ConfigStore
 from .notify import send_discord_success
 from .state import StateStore
@@ -88,6 +88,15 @@ class BookingScheduler:
             self.state.write_state(state)
 
             result = run_booking_attempt(config, SCREENSHOT_DIR)
+            booking_list_check = run_booking_list_check(config, SCREENSHOT_DIR, booking_override=config.get("booking", {}))
+            result["booking_list"] = booking_list_check
+            if result.get("ok") and not booking_list_check.get("ok"):
+                result["ok"] = False
+                result["status"] = "success_unverified"
+                result["message"] = f"{result.get('message','')};booking_list_unverified:{booking_list_check.get('message','')}"
+            elif result.get("ok") and booking_list_check.get("ok"):
+                result["status"] = "success_verified"
+                result["message"] = f"{result.get('message','')};booking_list_verified:{booking_list_check.get('message','')}"
 
             updated = self.state.read_state()
             updated["running"] = False
@@ -96,6 +105,7 @@ class BookingScheduler:
                 updated["last_success_key"] = self._attempt_key(config)
                 updated["last_success_target"] = config["schedule"]["target_departure_date"]
             self.state.write_state(updated)
+            self._record_queue_result(config, result)
             if result["ok"]:
                 self._advance_queue_if_needed()
 
@@ -105,6 +115,12 @@ class BookingScheduler:
                 "departure_time": config["schedule"]["departure_time"],
                 "arrival_date": config["schedule"]["target_arrival_date"],
                 "arrival_time": config["schedule"]["arrival_time"],
+                "booking": {
+                    "name": config["booking"].get("name", ""),
+                    "phone": config["booking"].get("phone", ""),
+                    "car_number": config["booking"].get("car_number", ""),
+                    "car_model": config["booking"].get("car_model", ""),
+                },
                 "result": result,
             }
             self.state.append_history(record)
@@ -176,3 +192,37 @@ class BookingScheduler:
             queue["active_index"] = idx + 1
             data["queue"] = queue
             self.cfg.save(data)
+
+    def _record_queue_result(self, effective_config: dict, result: dict) -> None:
+        raw = self.cfg.load()
+        queue = raw.get("queue", {})
+        profiles = queue.get("profiles", []) or []
+        if not queue.get("enabled") or not profiles:
+            return
+        idx = int(queue.get("active_index", 0))
+        if idx < 0 or idx >= len(profiles):
+            return
+        meta = queue.get("profile_meta", []) or []
+        while len(meta) < len(profiles):
+            meta.append(
+                {
+                    "status": "대기",
+                    "last_message": "",
+                    "last_at": "",
+                    "success_count": 0,
+                    "fail_count": 0,
+                }
+            )
+        row = dict(meta[idx] or {})
+        row["last_at"] = datetime.now().isoformat(timespec="seconds")
+        row["last_message"] = str(result.get("message", ""))
+        if result.get("ok"):
+            row["status"] = "성공"
+            row["success_count"] = int(row.get("success_count", 0)) + 1
+        else:
+            row["status"] = "실패"
+            row["fail_count"] = int(row.get("fail_count", 0)) + 1
+        meta[idx] = row
+        queue["profile_meta"] = meta
+        raw["queue"] = queue
+        self.cfg.save(raw)

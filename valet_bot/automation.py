@@ -9,6 +9,7 @@ from playwright.sync_api import TimeoutError as PWTimeoutError
 from playwright.sync_api import sync_playwright
 
 BOOKING_URL = "https://valet.amanopark.co.kr/booking#/main"
+BOOKING_LIST_URL = "https://valet.amanopark.co.kr/booking-list"
 
 
 def _log_debug(log_path: Path, message: str) -> None:
@@ -744,11 +745,25 @@ def _checkbox_stats(page) -> tuple[int, int]:
         return 0, 0
 
 
-def _detect_success(page) -> tuple[bool, str]:
+def _detect_success(page, booking: dict[str, Any]) -> tuple[bool, str]:
     # Primary signal: redirected to booking-list page after final confirm.
     try:
         if "/booking-list" in (page.url or ""):
-            return True, "success_by_url:booking-list"
+            body_text = page.inner_text("body")
+            matched = []
+            name = str(booking.get("name", "")).strip()
+            phone = str(booking.get("phone", "")).strip()
+            car_number = str(booking.get("car_number", "")).strip()
+            if name and name in body_text:
+                matched.append("name")
+            if car_number and car_number in body_text:
+                matched.append("car_number")
+            if phone and phone in body_text:
+                matched.append("phone")
+            reservation_id = _extract_reservation_id(body_text)
+            if matched:
+                return True, f"success_by_url_and_profile_match:{','.join(matched)};reservation_id={reservation_id or '-'}"
+            return True, f"success_by_url_only:booking-list;reservation_id={reservation_id or '-'}"
     except Exception:
         pass
 
@@ -766,6 +781,18 @@ def _detect_success(page) -> tuple[bool, str]:
     except Exception:
         pass
     return False, "success_not_detected"
+
+
+def _extract_reservation_id(text: str) -> str | None:
+    patterns = [
+        r"(예약번호)\s*[:：]?\s*([A-Za-z0-9\-]{4,})",
+        r"(접수번호)\s*[:：]?\s*([A-Za-z0-9\-]{4,})",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text)
+        if m:
+            return m.group(2)
+    return None
 
 
 def _confirm_submit_modal(page) -> tuple[bool, str]:
@@ -944,6 +971,8 @@ def run_booking_attempt(config: dict[str, Any], screenshot_dir: Path) -> dict[st
                     f"select_result service={service_ok} brand={brand_ok} color={color_ok} discount={discount_ok}",
                 )
 
+            dep_time_ok = True
+            arr_time_ok = True
             if not runtime.get("test_skip_dates", False):
                 depart_ok, depart_reason = _pick_day_in_calendar(
                     page, schedule["target_departure_date"], input_index=0
@@ -1026,7 +1055,7 @@ def run_booking_attempt(config: dict[str, Any], screenshot_dir: Path) -> dict[st
                 pass
             page.wait_for_timeout(1000)
 
-            ok, message = _detect_success(page)
+            ok, message = _detect_success(page, booking)
             result["ok"] = ok
             result["status"] = "success" if ok else "submitted_but_unconfirmed"
             result["message"] = f"{message};{confirm_msg}"
@@ -1054,3 +1083,474 @@ def run_booking_attempt(config: dict[str, Any], screenshot_dir: Path) -> dict[st
                     _log_debug(debug_log_path, f"trace_stop_failed:{exc}")
             context.close()
             browser.close()
+
+
+def _fill_booking_lookup(page, car_number: str, phone: str) -> None:
+    normalized_phone = re.sub(r"\D", "", phone or "")
+    _apply_lookup_inputs(page, car_number, normalized_phone)
+    _click_lookup_confirm(page)
+    _wait_booking_list_rows(page, timeout_ms=5000)
+
+
+def _apply_lookup_inputs(page, car_number: str, phone: str) -> None:
+    car_ok = _fill_input_near_label(
+        page,
+        label_patterns=["차량번호"],
+        value=car_number,
+    )
+    phone_ok = _fill_input_near_label(
+        page,
+        label_patterns=["휴대전화", "전화번호", "휴대폰"],
+        value=phone,
+    )
+
+    # Fallback: use visible text inputs order (car first, phone second).
+    visible_text_inputs = page.locator(
+        "input:visible:not([type='hidden']):not([type='checkbox']):not([type='radio'])"
+    )
+    if not car_ok and visible_text_inputs.count() >= 1:
+        _set_input_value(visible_text_inputs.nth(0), car_number)
+    if not phone_ok and visible_text_inputs.count() >= 2:
+        _set_input_value(visible_text_inputs.nth(1), phone)
+
+
+def _fill_input_near_label(page, label_patterns: list[str], value: str) -> bool:
+    for label in label_patterns:
+        selectors = [
+            f"xpath=//*[contains(normalize-space(.), '{label}')]/following::input[1]",
+            f"xpath=//label[contains(normalize-space(.), '{label}')]/following::input[1]",
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.count() == 0:
+                    continue
+                _set_input_value(loc, value)
+                current = loc.input_value().strip()
+                if current:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _set_input_value(locator, value: str) -> None:
+    locator.fill(value)
+    try:
+        locator.dispatch_event("input")
+        locator.dispatch_event("change")
+    except Exception:
+        pass
+
+
+def _click_lookup_confirm(page) -> None:
+    try:
+        page.get_by_role("button", name="확인").first.click(timeout=1500)
+    except Exception:
+        page.locator("button:has-text('확인')").first.click(timeout=1500)
+
+
+
+
+def _extract_booking_list_row(page, car_number: str) -> tuple[str, bool]:
+    try:
+        _wait_booking_list_rows(page, timeout_ms=3000)
+        payload = page.evaluate(
+            """(carNum) => {
+                const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+                const rows = Array.from(document.querySelectorAll(".component-table-row.body.el-row--flex"));
+                if (!rows.length) return { status: "row_not_found", cancel: false };
+
+                const parsed = rows.map((row) => {
+                  const cols = row.querySelectorAll(".col.el-col.el-col-24");
+                  const car = cols[1] ? norm(cols[1].textContent) : "";
+                  const status = norm((row.querySelector(".col.book") || {}).textContent || "");
+                  const txt = norm(row.textContent);
+                  const hasCancel =
+                    !!row.querySelector("button.el-button--danger") ||
+                    /예약\\s*취소/.test(txt) ||
+                    txt.includes("예약취소");
+                  return { car, status, hasCancel, txt };
+                });
+
+                const prefix = norm(carNum).slice(0, 5);
+                let row = parsed[0];
+                if (prefix) {
+                  const matched = parsed.find((r) => r.car.includes(prefix) || r.txt.includes(prefix));
+                  if (matched) row = matched;
+                }
+
+                let status = row.status || "unknown";
+                if (!status) {
+                  if (row.txt.includes("입차")) status = "입차";
+                  else if (row.txt.includes("취소")) status = "취소";
+                  else if (row.txt.includes("예약")) status = "예약";
+                }
+
+                const cancel = row.hasCancel || status === "예약";
+                return { status: status || "unknown", cancel };
+            }""",
+            car_number,
+        )
+        return str(payload.get("status", "parse_failed")), bool(payload.get("cancel", False))
+    except Exception:
+        return "parse_failed", False
+
+
+def _extract_booking_statuses(page, car_number: str) -> list[str]:
+    try:
+        payload = page.evaluate(
+            """(carNum) => {
+                const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+                const rows = Array.from(document.querySelectorAll(".component-table-row.body.el-row--flex"));
+                const prefix = norm(carNum).slice(0, 5);
+                const statuses = [];
+                for (const row of rows) {
+                  const cols = row.querySelectorAll(".col.el-col.el-col-24");
+                  const car = cols[1] ? norm(cols[1].textContent) : "";
+                  if (prefix && !(car.includes(prefix) || norm(row.textContent).includes(prefix))) continue;
+                  const s = norm((row.querySelector(".col.book") || {}).textContent || "");
+                  if (s) statuses.push(s);
+                }
+                return statuses;
+            }""",
+            car_number,
+        )
+        return [str(x) for x in (payload or [])]
+    except Exception:
+        return []
+
+
+def _extract_booking_rows_snapshot(page, car_number: str) -> list[dict[str, str]]:
+    try:
+        payload = page.evaluate(
+            """(carNum) => {
+                const norm = (s) => (s || "").replace(/\\s+/g, " ").trim();
+                const rows = Array.from(document.querySelectorAll(".component-table-row.body.el-row--flex"));
+                const prefix = norm(carNum).slice(0, 5);
+                const out = [];
+                for (const row of rows) {
+                    const cols = row.querySelectorAll(".col.el-col.el-col-24");
+                    const no = cols[0] ? norm(cols[0].textContent) : "";
+                    const car = cols[1] ? norm(cols[1].textContent) : "";
+                    const applyDate = cols[2] ? norm(cols[2].textContent) : "";
+                    if (prefix && !(car.includes(prefix) || norm(row.textContent).includes(prefix))) continue;
+                    const status = norm((row.querySelector(".col.book") || {}).textContent || "");
+                    out.push({ no, car, applyDate, status });
+                }
+                return out;
+            }""",
+            car_number,
+        )
+        return [dict(x) for x in (payload or [])]
+    except Exception:
+        return []
+
+
+def _find_booking_row(page, car_number: str):
+    # Preferred structure from booking-list page.
+    rows = page.locator(".component-table-row.body.el-row--flex")
+    if rows.count() == 0:
+        return page.locator("tr:has-text('확인하기')").first
+
+    prefix = (car_number or "").strip()[:5]
+    if prefix:
+        for i in range(rows.count()):
+            r = rows.nth(i)
+            try:
+                car_cell = r.locator(".col.el-col.el-col-24").nth(1).inner_text().strip()
+                if prefix in car_cell:
+                    return r
+            except Exception:
+                continue
+
+    # If there is a cancel button row, prefer it.
+    for i in range(rows.count()):
+        r = rows.nth(i)
+        if r.locator("button.el-button--danger, button:has-text('예약취소'), button:has-text('예약 취소')").count() > 0:
+            return r
+    return rows.first
+
+
+def run_booking_list_check(config: dict[str, Any], screenshot_dir: Path, booking_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    booking = dict(config.get("booking", {}))
+    if booking_override:
+        booking.update(booking_override)
+    runtime = config["runtime"]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    shot_path = screenshot_dir / f"verify_{ts}.png"
+    result = {
+        "ok": False,
+        "message": "unknown",
+        "status_text": "",
+        "cancel_available": False,
+        "screenshot_path": str(shot_path),
+    }
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=runtime["headless"], slow_mo=runtime["slow_mo_ms"])
+        context = browser.new_context(locale="ko-KR")
+        page = context.new_page()
+        page.set_default_timeout(runtime["timeout_ms"])
+        try:
+            page.goto(BOOKING_LIST_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(1000)
+            _fill_booking_lookup(page, str(booking.get("car_number", "")), str(booking.get("phone", "")))
+            status_text, cancel_available = _extract_booking_list_row(page, str(booking.get("car_number", "")))
+            result["status_text"] = status_text
+            result["cancel_available"] = cancel_available
+            result["ok"] = status_text in ("예약", "입차") or (cancel_available and status_text != "row_not_found")
+            result["message"] = f"booking_list_status:{status_text};cancel_available={cancel_available}"
+            page.screenshot(path=str(shot_path), full_page=True)
+            return result
+        except Exception as exc:
+            result["message"] = f"verify_exception:{exc}"
+            page.screenshot(path=str(shot_path), full_page=True)
+            return result
+        finally:
+            context.close()
+            browser.close()
+
+
+def run_booking_list_cancel(config: dict[str, Any], screenshot_dir: Path, booking_override: dict[str, Any] | None = None) -> dict[str, Any]:
+    booking = dict(config.get("booking", {}))
+    if booking_override:
+        booking.update(booking_override)
+    runtime = config["runtime"]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    shot_path = screenshot_dir / f"cancel_{ts}.png"
+    result = {
+        "ok": False,
+        "message": "unknown",
+        "screenshot_path": str(shot_path),
+    }
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=runtime["headless"], slow_mo=runtime["slow_mo_ms"])
+        context = browser.new_context(locale="ko-KR")
+        page = context.new_page()
+        page.set_default_timeout(runtime["timeout_ms"])
+        page.on("dialog", lambda d: d.accept())
+        try:
+            page.goto(BOOKING_LIST_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(1000)
+            _fill_booking_lookup(page, str(booking.get("car_number", "")), str(booking.get("phone", "")))
+
+            if not _click_cancel_action(page, str(booking.get("car_number", ""))):
+                result["message"] = "cancel_action_not_found"
+                page.screenshot(path=str(shot_path), full_page=True)
+                return result
+            page.wait_for_timeout(800)
+
+            # Secondary identity prompt (must target modal-layer inputs/buttons only).
+            second_ok = _handle_cancel_identity_modal(
+                page,
+                car_number=str(booking.get("car_number", "")),
+                phone=str(booking.get("phone", "")),
+            )
+            if not second_ok:
+                result["message"] = "cancel_identity_modal_not_handled"
+                page.screenshot(path=str(shot_path), full_page=True)
+                return result
+            page.wait_for_timeout(1200)
+            _handle_final_confirm_modal(page)
+            page.wait_for_timeout(1000)
+
+            before_rows = _extract_booking_rows_snapshot(page, str(booking.get("car_number", "")))
+            before_reserved = len([r for r in before_rows if r.get("status") == "예약"])
+
+            # Re-check status
+            _fill_booking_lookup(page, str(booking.get("car_number", "")), str(booking.get("phone", "")))
+            status_text, _ = _extract_booking_list_row(page, str(booking.get("car_number", "")))
+            after_rows = _extract_booking_rows_snapshot(page, str(booking.get("car_number", "")))
+            after_reserved = len([r for r in after_rows if r.get("status") == "예약"])
+            after_statuses = [r.get("status", "") for r in after_rows]
+
+            # Strict success criteria:
+            # 1) reserved row count decreased, OR
+            # 2) no rows remain in "예약" while rows exist, OR
+            # 3) parser directly says latest row is "취소".
+            canceled = False
+            if before_reserved > after_reserved:
+                canceled = True
+            elif after_rows and after_reserved == 0 and "취소" in after_statuses:
+                canceled = True
+            elif status_text == "취소":
+                canceled = True
+
+            result["ok"] = canceled
+            result["message"] = (
+                f"cancel_status:{status_text};"
+                f"before_reserved={before_reserved};after_reserved={after_reserved};"
+                f"after_statuses={','.join(after_statuses) if after_statuses else '-'}"
+            )
+            page.screenshot(path=str(shot_path), full_page=True)
+            return result
+        except Exception as exc:
+            result["message"] = f"cancel_exception:{exc}"
+            page.screenshot(path=str(shot_path), full_page=True)
+            return result
+        finally:
+            context.close()
+            browser.close()
+
+
+def _click_cancel_action(page, car_number: str) -> bool:
+    row = _find_booking_row(page, car_number)
+    if row.count() > 0:
+        candidates = [
+            row.locator("button.el-button--danger"),
+            row.locator("button:has-text('예약취소')"),
+            row.locator("button:has-text('예약 취소')"),
+            row.locator("a:has-text('예약취소')"),
+            row.locator("a:has-text('예약 취소')"),
+        ]
+        for loc in candidates:
+            try:
+                if loc.count() == 0:
+                    continue
+                loc.first.click(timeout=1500, force=True)
+                return True
+            except Exception:
+                continue
+
+    selectors = [
+        "button.el-button--danger:visible",
+        "button:has-text('예약취소'):visible",
+        "button:has-text('예약 취소'):visible",
+        "a:has-text('예약취소'):visible",
+        "a:has-text('예약 취소'):visible",
+    ]
+    for s in selectors:
+        try:
+            loc = page.locator(s).first
+            if loc.count() == 0:
+                continue
+            loc.click(timeout=1500, force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _handle_cancel_identity_modal(page, car_number: str, phone: str) -> bool:
+    phone = re.sub(r"\D", "", phone or "")
+    modal_selectors = [
+        ".el-dialog:visible",
+        ".modal:visible",
+        ".layer-popup:visible",
+        ".el-message-box:visible",
+    ]
+    modal = None
+    for sel in modal_selectors:
+        try:
+            loc = page.locator(sel).last
+            if loc.count() > 0:
+                modal = loc
+                break
+        except Exception:
+            continue
+    if modal is None:
+        # Fallback to page-level visible popup-ish container.
+        try:
+            modal = page.locator("div:visible:has-text('차량번호'):has-text('휴대폰')").last
+        except Exception:
+            return False
+
+    try:
+        _fill_input_in_scope(modal, ["차량번호"], car_number)
+        _fill_input_in_scope(modal, ["휴대전화", "전화번호", "휴대폰"], phone)
+    except Exception:
+        return False
+
+    # Click confirm inside modal only.
+    btn_selectors = [
+        "button:has-text('확인')",
+        ".el-button--primary:has-text('확인')",
+        ".el-message-box__btns .el-button--primary",
+    ]
+    for bs in btn_selectors:
+        try:
+            b = modal.locator(bs).first
+            if b.count() == 0:
+                continue
+            b.click(timeout=1500, force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _fill_input_in_scope(scope, label_patterns: list[str], value: str) -> bool:
+    for label in label_patterns:
+        selectors = [
+            f"xpath=.//*[contains(normalize-space(.), '{label}')]/following::input[1]",
+            f"xpath=.//label[contains(normalize-space(.), '{label}')]/following::input[1]",
+        ]
+        for sel in selectors:
+            try:
+                loc = scope.locator(sel).first
+                if loc.count() == 0:
+                    continue
+                loc.fill(value)
+                try:
+                    loc.dispatch_event("input")
+                    loc.dispatch_event("change")
+                except Exception:
+                    pass
+                return True
+            except Exception:
+                continue
+
+    # Fallback: visible text inputs in modal
+    try:
+        inputs = scope.locator("input:visible:not([type='hidden'])")
+        if inputs.count() > 0:
+            for i in range(inputs.count()):
+                loc = inputs.nth(i)
+                ph = ""
+                try:
+                    ph = (loc.get_attribute("placeholder") or "").strip()
+                except Exception:
+                    pass
+                if any(k in ph for k in label_patterns) or not ph:
+                    loc.fill(value)
+                    try:
+                        loc.dispatch_event("input")
+                        loc.dispatch_event("change")
+                    except Exception:
+                        pass
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _handle_final_confirm_modal(page) -> bool:
+    # Final "정말 취소하시겠습니까?" style confirmation can be native dialog or custom modal.
+    selectors = [
+        ".el-message-box:visible .el-button--primary",
+        ".el-message-box:visible button:has-text('확인')",
+        ".modal:visible button:has-text('확인')",
+        ".el-dialog:visible button:has-text('확인')",
+        "button:has-text('확인'):visible",
+    ]
+    for s in selectors:
+        try:
+            btn = page.locator(s).last
+            if btn.count() == 0:
+                continue
+            btn.click(timeout=1500, force=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _wait_booking_list_rows(page, timeout_ms: int = 5000) -> None:
+    # booking-list result table can render asynchronously after "확인".
+    try:
+        page.wait_for_selector(
+            "table tbody tr, table tr:has-text('확인하기'), .el-table__body tr, .el-table__row",
+            timeout=timeout_ms,
+        )
+    except Exception:
+        page.wait_for_timeout(400)
