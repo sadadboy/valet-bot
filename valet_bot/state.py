@@ -30,9 +30,17 @@ class StateStore:
     def read_state(self) -> dict[str, Any]:
         with self.lock:
             if not self.state_path.exists():
-                return {"last_attempt_at": None, "last_success_target": None, "running": False}
+                return {
+                    "last_attempt_at": None,
+                    "last_success_target": None,
+                    "last_success_key": None,
+                    "running": False,
+                }
             with self.state_path.open("r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if "last_success_key" not in data:
+                    data["last_success_key"] = None
+                return data
 
     def write_state(self, state: dict[str, Any]) -> None:
         with self.lock:

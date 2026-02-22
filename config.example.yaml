@@ -22,6 +22,11 @@ booking:
   discount_type: "일반"
   airline: "대한항공"
 
+queue:
+  enabled: false
+  active_index: 0
+  profiles: []
+
 notify:
   discord_webhook_url: "https://discord.com/api/webhooks/REPLACE_ME"
   success_only: true

@@ -35,6 +35,7 @@ docker compose up -d
 
 - 설정파일(`config.yaml`) 기반
 - 대시보드에서 입력값/시작시각/종료시각/간격 관리
+- 다중 예약자 큐(`queue`)를 켜면 성공 후 다음 예약자로 자동 전환
 - 지정 시간 창에서 30초 간격(설정값)으로 예약 시도
 - 날짜 선택 실패 시 `date_not_open`으로 기록
 - 성공 추정 시 Discord Webhook 발송

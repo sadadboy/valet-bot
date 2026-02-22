@@ -38,6 +38,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "discount_type": "일반",
         "airline": "대한항공",
     },
+    "queue": {
+        "enabled": False,
+        "active_index": 0,
+        "profiles": [],
+    },
     "notify": {
         "discord_webhook_url": "https://discord.com/api/webhooks/1392528407685894146/rwSBXQfFEeck2XWHbx91QHgMMyiQrW46p4QojCIUxSonhYHIEbjLN-FRD0cjEa5cAVzR",
         "success_only": True,

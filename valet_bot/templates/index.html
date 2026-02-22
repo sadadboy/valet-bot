@@ -10,11 +10,26 @@
   <main class="container">
     <h1>Valet 예약 대시보드</h1>
     <section class="panel">
+      <h2>사용 방법</h2>
+      <ol class="help-list">
+        <li>예약 날짜/시간과 차량정보를 입력하고 <strong>설정 저장</strong>을 누릅니다.</li>
+        <li>자동 실행은 시작시각~종료시각 동안 30초 간격으로 예약을 시도합니다.</li>
+        <li>바로 테스트하려면 <strong>지금 1회 시도</strong>를 누릅니다.</li>
+        <li>여러 사람 예약은 아래 <strong>다중 예약자 큐</strong>에 줄바꿈으로 등록합니다.</li>
+      </ol>
+      <p class="help-note">입력 형식(한 줄): <code>이름,휴대전화,차량번호,차량모델</code></p>
+    </section>
+
+    <section class="panel">
       <h2>현재 상태</h2>
       <p>활성화: <strong>{{ "ON" if config.general.enabled else "OFF" }}</strong></p>
       <p>실행중: <strong>{{ "YES" if runtime_state.running else "NO" }}</strong></p>
       <p>마지막 시도: <strong>{{ runtime_state.last_attempt_at or "-" }}</strong></p>
       <p>성공 대상일: <strong>{{ runtime_state.last_success_target or "-" }}</strong></p>
+      <p>큐 상태: <strong>{{ "ON" if config.queue.enabled else "OFF" }}</strong> ({{ queue_active_index + 1 if queue_total > 0 else 0 }}/{{ queue_total }})</p>
+      {% if queue_active_profile %}
+      <p>현재 예약자: <strong>{{ queue_active_profile.name }}</strong> / {{ queue_active_profile.car_number }}</p>
+      {% endif %}
       <form method="post" action="/run-now">
         <button type="submit">지금 1회 시도</button>
       </form>
@@ -88,6 +103,12 @@
           </select>
         </label>
         <label>Discord Webhook<input name="discord_webhook_url" value="{{ config.notify.discord_webhook_url }}" /></label>
+        <label>다중 예약자 큐
+          <select name="queue_enabled">
+            <option value="false" {% if not config.queue.enabled %}selected{% endif %}>OFF</option>
+            <option value="true" {% if config.queue.enabled %}selected{% endif %}>ON</option>
+          </select>
+        </label>
 
         <label>활성화
           <select name="enabled">
@@ -107,6 +128,9 @@
             <option value="true" {% if config.runtime.test_skip_dates %}selected{% endif %}>ON</option>
           </select>
         </label>
+        <label class="full">예약자 큐 목록
+          <textarea name="queue_profiles_text" rows="5" placeholder="홍길동,01012341234,12가1234,GV60&#10;김영수,01023452345,34나5678,G80">{{ queue_text }}</textarea>
+        </label>
 
         <button type="submit" class="save">설정 저장</button>
       </form>
@@ -114,6 +138,7 @@
 
     <section class="panel">
       <h2>최근 시도</h2>
+      <div class="table-wrap">
       <table>
         <thead>
           <tr>
@@ -152,6 +177,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
     </section>
   </main>
 </body>

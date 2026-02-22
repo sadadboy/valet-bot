@@ -24,6 +24,42 @@ state = StateStore()
 scheduler = BookingScheduler(cfg, state)
 
 
+def _render_queue_text(config: dict[str, Any]) -> str:
+    rows: list[str] = []
+    for p in config.get("queue", {}).get("profiles", []) or []:
+        rows.append(
+            ",".join(
+                [
+                    str(p.get("name", "")).strip(),
+                    str(p.get("phone", "")).strip(),
+                    str(p.get("car_number", "")).strip(),
+                    str(p.get("car_model", "")).strip(),
+                ]
+            )
+        )
+    return "\n".join(rows)
+
+
+def _parse_queue_text(raw: str) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for line in raw.splitlines():
+        row = line.strip()
+        if not row or row.startswith("#"):
+            continue
+        parts = [x.strip() for x in row.split(",")]
+        if len(parts) < 4:
+            continue
+        out.append(
+            {
+                "name": parts[0],
+                "phone": parts[1],
+                "car_number": parts[2],
+                "car_model": parts[3],
+            }
+        )
+    return out
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     scheduler.start()
@@ -41,10 +77,26 @@ def index(request: Request) -> Any:
     config = cfg.load()
     runtime_state = state.read_state()
     history = state.read_history(limit=30)
+    queue = config.get("queue", {})
+    profiles = queue.get("profiles", []) or []
+    active_idx = int(queue.get("active_index", 0))
+    if active_idx < 0:
+        active_idx = 0
+    if profiles and active_idx >= len(profiles):
+        active_idx = len(profiles) - 1
+    active_profile = profiles[active_idx] if profiles else None
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={"config": config, "runtime_state": runtime_state, "history": history},
+        context={
+            "config": config,
+            "runtime_state": runtime_state,
+            "history": history,
+            "queue_text": _render_queue_text(config),
+            "queue_active_profile": active_profile,
+            "queue_active_index": active_idx,
+            "queue_total": len(profiles),
+        },
     )
 
 
@@ -70,6 +122,8 @@ def save_config(
     enabled: str = Form("false"),
     headless: str = Form("true"),
     test_skip_dates: str = Form("false"),
+    queue_enabled: str = Form("false"),
+    queue_profiles_text: str = Form(""),
 ) -> RedirectResponse:
     data = cfg.load()
     data["booking"].update(
@@ -100,6 +154,20 @@ def save_config(
     data["general"]["enabled"] = enabled == "true"
     data["runtime"]["headless"] = headless == "true"
     data["runtime"]["test_skip_dates"] = test_skip_dates == "true"
+    queue_profiles = _parse_queue_text(queue_profiles_text)
+    queue = data.get("queue", {})
+    queue["enabled"] = queue_enabled == "true"
+    queue["profiles"] = queue_profiles
+    if queue_profiles:
+        current_idx = int(queue.get("active_index", 0))
+        if current_idx < 0:
+            current_idx = 0
+        if current_idx >= len(queue_profiles):
+            current_idx = len(queue_profiles) - 1
+        queue["active_index"] = current_idx
+    else:
+        queue["active_index"] = 0
+    data["queue"] = queue
     cfg.save(data)
     return RedirectResponse(url="/", status_code=303)
 

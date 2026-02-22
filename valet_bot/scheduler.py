@@ -48,14 +48,14 @@ class BookingScheduler:
             time.sleep(3)
 
     def _tick(self) -> None:
-        config = self.cfg.load()
+        config = self._effective_config(self.cfg.load())
         if not config["general"]["enabled"]:
             return
 
         tz = ZoneInfo(config["general"]["timezone"])
         now = datetime.now(tz)
         schedule = config["schedule"]
-        target = schedule["target_departure_date"]
+        attempt_key = self._attempt_key(config)
 
         start_at = self._parse_time(schedule["check_start_time"])
         stop_at = self._parse_time(schedule["stop_time"])
@@ -63,7 +63,7 @@ class BookingScheduler:
             return
 
         state = self.state.read_state()
-        if state.get("last_success_target") == target:
+        if state.get("last_success_key") == attempt_key:
             return
 
         last_attempt = state.get("last_attempt_at")
@@ -82,7 +82,7 @@ class BookingScheduler:
         if not self._run_lock.acquire(blocking=False):
             return
         try:
-            config = self.cfg.load()
+            config = self._effective_config(self.cfg.load())
             state = self.state.read_state()
             state["running"] = True
             self.state.write_state(state)
@@ -93,8 +93,11 @@ class BookingScheduler:
             updated["running"] = False
             updated["last_attempt_at"] = datetime.now().isoformat(timespec="seconds")
             if result["ok"]:
+                updated["last_success_key"] = self._attempt_key(config)
                 updated["last_success_target"] = config["schedule"]["target_departure_date"]
             self.state.write_state(updated)
+            if result["ok"]:
+                self._advance_queue_if_needed()
 
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
@@ -126,3 +129,50 @@ class BookingScheduler:
         if start <= stop:
             return start <= now <= stop
         return now >= start or now <= stop
+
+    @staticmethod
+    def _attempt_key(config: dict) -> str:
+        schedule = config.get("schedule", {})
+        booking = config.get("booking", {})
+        return "|".join(
+            [
+                str(schedule.get("target_departure_date", "")),
+                str(schedule.get("departure_time", "")),
+                str(booking.get("car_number", "")),
+                str(booking.get("phone", "")),
+                str(booking.get("name", "")),
+            ]
+        )
+
+    @staticmethod
+    def _effective_config(config: dict) -> dict:
+        queue = config.get("queue", {})
+        profiles = queue.get("profiles", []) or []
+        if not queue.get("enabled") or not profiles:
+            return config
+        idx = int(queue.get("active_index", 0))
+        if idx < 0:
+            idx = 0
+        if idx >= len(profiles):
+            idx = len(profiles) - 1
+        profile = profiles[idx] or {}
+        booking = dict(config.get("booking", {}))
+        booking["name"] = profile.get("name", booking.get("name", ""))
+        booking["phone"] = profile.get("phone", booking.get("phone", ""))
+        booking["car_number"] = profile.get("car_number", booking.get("car_number", ""))
+        booking["car_model"] = profile.get("car_model", booking.get("car_model", ""))
+        config = dict(config)
+        config["booking"] = booking
+        return config
+
+    def _advance_queue_if_needed(self) -> None:
+        data = self.cfg.load()
+        queue = data.get("queue", {})
+        profiles = queue.get("profiles", []) or []
+        if not queue.get("enabled") or not profiles:
+            return
+        idx = int(queue.get("active_index", 0))
+        if idx < len(profiles) - 1:
+            queue["active_index"] = idx + 1
+            data["queue"] = queue
+            self.cfg.save(data)
